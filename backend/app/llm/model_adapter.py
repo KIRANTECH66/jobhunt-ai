@@ -125,11 +125,11 @@ class MockModelAdapter(ModelAdapter):
                 ),
             }
         # Per-instance scripted responses for tool-calling cycles. Keys are
-        # matched against the last user/assistant message content.
+        # matched against any message content in the conversation.
         self._scripted: dict[str, ModelResponse] = {}
 
     def set_response(self, key: str, response: ModelResponse) -> None:
-        """Script a canned response keyed by message content."""
+        """Script a canned response keyed by substring match in any message content."""
         self._scripted[key] = response
 
     def clear_scripted(self) -> None:
@@ -137,46 +137,20 @@ class MockModelAdapter(ModelAdapter):
         self._scripted.clear()
 
     @staticmethod
-    def _last_user_message(messages: list[dict[str, Any]] | None, prompt: str) -> str:
-        """Return the most recent user-facing text from the conversation."""
-        if messages:
-            for message in reversed(messages):
-                if message.get("role") == "user":
-                    content = message.get("content")
-                    if isinstance(content, str):
-                        return content
-                    if isinstance(content, list):
-                        for part in content:
-                            if isinstance(part, dict) and part.get("type") == "text":
-                                return part.get("text", "")
-                    if content is not None:
-                        return str(content)
-        return prompt
-
-    @staticmethod
-    def _last_tool_call_name(messages: list[dict[str, Any]] | None) -> str | None:
-        """Return the name of the last tool call in the conversation, if any."""
+    def _message_contains_key(messages: list[dict[str, Any]] | None, key: str) -> bool:
+        """Return True if ``key`` appears as a substring in any message content."""
         if not messages:
-            return None
-        for message in reversed(messages):
-            if message.get("role") == "assistant":
-                tool_calls = message.get("tool_calls")
-                if tool_calls and isinstance(tool_calls, list) and len(tool_calls) > 0:
-                    # Return the first tool call's function name
-                    first_call = tool_calls[0]
-                    if isinstance(first_call, dict):
-                        func = first_call.get("function")
-                        if func:
-                            return func.get("name")
-        return None
-
-    def _scripted_lookup(self, key: str, tool_call_name: str | None) -> ModelResponse | None:
-        """Return a scripted response if one matches the key or tool call name."""
-        if key in self._scripted:
-            return self._scripted[key]
-        if tool_call_name and tool_call_name in self._scripted:
-            return self._scripted[tool_call_name]
-        return None
+            return False
+        for message in messages:
+            content = message.get("content")
+            if isinstance(content, str) and key in content:
+                return True
+            if isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        if key in part.get("text", ""):
+                            return True
+        return False
 
     async def generate(
         self,
@@ -187,28 +161,38 @@ class MockModelAdapter(ModelAdapter):
         tools: list[dict[str, Any]] | None = None,
         **kwargs: Any,
     ) -> ModelResponse:
-        key = self._last_user_message(messages, prompt)
-        tool_call_name = self._last_tool_call_name(messages)
-
-        # Scripted responses take precedence (used by tool-calling cycle tests).
-        scripted = self._scripted_lookup(key, tool_call_name)
-        if scripted is not None:
-            return scripted
-
-        # Simple pattern matching for testability
-        lowered = key.lower()
-        if "match_score" in lowered:
-            return self._responses["match_score"]
-        elif "no match" in lowered or "unqualified" in lowered:
-            return self._responses["no_match"]
+        # 1. Check scripted responses: if any key appears in the conversation (or prompt if no messages),
+        #    return the corresponding response.
+        if messages:
+            for scripted_key, scripted_response in self._scripted.items():
+                if self._message_contains_key(messages, scripted_key):
+                    return scripted_response
         else:
-            # Return a generic response that includes common fields
-            return ModelResponse(
-                content='{"result": "ok"}',
-                model="mock",
-                usage={"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
-                finish_reason="stop",
-            )
+            # No messages provided: fall back to checking the prompt (and system?) for backward compatibility.
+            lowered_prompt = prompt.lower()
+            for scripted_key, scripted_response in self._scripted.items():
+                if scripted_key.lower() in lowered_prompt:
+                    return scripted_response
+
+        # 2. Check the built-in canned responses (backward compatibility).
+        if messages:
+            # When messages are provided, we do not use the prompt-based canned responses.
+            # This keeps the mock deterministic for tool-calling tests.
+            pass
+        else:
+            lowered = prompt.lower()
+            if "match_score" in lowered:
+                return self._responses["match_score"]
+            elif "no match" in lowered or "unqualified" in lowered:
+                return self._responses["no_match"]
+
+        # 3. Generic fallback.
+        return ModelResponse(
+            content='{"result": "ok"}',
+            model="mock",
+            usage={"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+            finish_reason="stop",
+        )
 
 
 class OpenAIModelAdapter(ModelAdapter):
