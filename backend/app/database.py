@@ -9,11 +9,37 @@ wired in a later milestone once orchestration is implemented. The
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import AsyncIterator
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
+
+
+def _ensure_sqlite_dir(database_url: str) -> None:
+    """Create the parent directory for a SQLite database file, if any.
+
+    aiosqlite refuses to open a database whose directory does not exist. The
+    default path is absolute (see ``app.config``), so without this the first
+    run in a fresh checkout fails with "unable to open database file".
+    """
+    if not database_url.startswith("sqlite"):
+        return
+    # Use SQLAlchemy's own URL parser so the database component is extracted
+    # consistently with how the engine opens the file.
+    from sqlalchemy.engine.url import make_url
+
+    file_part = make_url(database_url).database or ""
+    if not file_part or not file_part.startswith("/"):
+        # Relative path — leave it to the process CWD as documented.
+        return
+    parent = Path(file_part).parent
+    if parent and not parent.exists():
+        parent.mkdir(parents=True, exist_ok=True)
+
+
+_ensure_sqlite_dir(settings.database_url)
 
 engine = create_async_engine(
     settings.database_url,
@@ -48,7 +74,7 @@ def _checkpoint_dsn() -> str:
         return dsn
     if "search_path" not in dsn:
         sep = "&" if "?" in dsn else "?"
-        dsn = f"{dn}{sep}options=search_path%3Dcheckpoint"
+        dsn = f"{dsn}{sep}options=search_path%3Dcheckpoint"
     return dsn
 
 

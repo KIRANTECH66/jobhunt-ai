@@ -12,8 +12,18 @@ PostgreSQL DSN switches to the deployed configuration.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Resolve the default SQLite path against this file's directory so it is
+# independent of the process working directory. A relative default
+# (``./data/jobhunt.db``) silently resolves to different files depending on
+# where the app is started, which split the database across two locations.
+_DEFAULT_SQLITE_PATH = str(
+    Path(__file__).resolve().parent.parent / "data" / "jobhunt.db"
+)
 
 
 class Settings(BaseSettings):
@@ -29,8 +39,10 @@ class Settings(BaseSettings):
 
     # --- Database -----------------------------------------------------------
     # SQLite by default for local development; a Postgres DSN overrides this.
+    # The default is resolved against the backend package directory so it is
+    # independent of the process working directory.
     database_url: str = Field(
-        default="sqlite+aiosqlite:///./data/jobhunt.db",
+        default=f"sqlite+aiosqlite:///{_DEFAULT_SQLITE_PATH}",
         description=(
             "Async SQLAlchemy URL for application tables. "
             "sqlite+aiosqlite:///... for local runs; postgresql+asyncpg://... for deployed use."

@@ -34,11 +34,18 @@ def create_app() -> FastAPI:
         on_startup=[_create_tables],
     )
 
-    # CORS middleware for development
+    # CORS middleware for development.
+    #
+    # Wildcard origins and credentialed requests are mutually exclusive per the
+    # Fetch specification: a credentialed request to `Origin: *` is rejected by
+    # browsers. With a wildcard origin we must not set allow_credentials, so
+    # credentialed cross-origin calls are intentionally unsupported in dev.
+    # Before enabling credentialed requests, replace the wildcard with an
+    # explicit origin list (see settings.cors_origins).
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # Configure appropriately for production
-        allow_credentials=True,
+        allow_origins=["*"],
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )

@@ -19,7 +19,7 @@ from app.repositories.job import SQLAlchemyJobRepository
 from app.repositories.match import SQLAlchemyMatchRepository
 from app.schemas.job import JobPostingCreate
 from app.schemas.match import MatchResult
-from app.schemas.profile import CandidateProfile, ProfileData, ProfilePreferences, ProfileUpdate
+from app.schemas.profile import CandidateProfile, ProfileUpdate
 
 api_router = APIRouter()
 
@@ -57,28 +57,39 @@ async def get_current_profile(
 
 @api_router.put("/profiles/current", response_model=CandidateProfile, tags=["profiles"])
 async def update_profile(
-    profile_data: ProfileData,
-    preferences_data: ProfilePreferences,
+    body: ProfileUpdate,
     session: AsyncSession = Depends(get_db),
 ) -> CandidateProfile:
-    """Create or update the candidate profile.
+    """Create or update the candidate profile (partial update).
 
-    If no profile exists, creates a new one with version 1.
-    If a profile exists, updates it and creates a new version.
+    Accepts a single ``ProfileUpdate`` request body. ``profile_data`` and
+    ``preferences_data`` are each optional: a field that is omitted or ``null``
+    is left unchanged, while a field that is explicitly provided replaces the
+    stored value (partial fields within each sub-object are merged, so a
+    client can update ``full_name`` alone). If no profile exists, one is
+    created with version 1; both sub-objects are required in that case.
     """
     repo = SQLAlchemyProfileRepository(session)
     current = await repo.get_current()
     if current is None:
-        # No profile exists; create a new one
+        # No profile exists; create a new one. Both sub-objects are required
+        # for an initial profile — reject rather than silently persisting
+        # partial data.
+        if body.profile_data is None or body.preferences_data is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Creating a new profile requires both profile_data and "
+                    "preferences_data."
+                ),
+            )
         profile = await repo.create(
-            profile_data.model_dump(), preferences_data.model_dump()
+            body.profile_data.model_dump(), body.preferences_data.model_dump()
         )
     else:
-        # Profile exists; update it (creates a new version)
-        update = ProfileUpdate(
-            profile_data=profile_data, preferences_data=preferences_data
-        )
-        profile = await repo.update(current.id, update)
+        # Profile exists; update it (creates a new version). The repository
+        # merges unset fields, so omitting a field preserves the stored value.
+        profile = await repo.update(current.id, body)
     return profile
 
 

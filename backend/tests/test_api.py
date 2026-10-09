@@ -120,9 +120,8 @@ def test_create_and_get_profile(test_client: TestClient) -> None:
     assert data["profile_data"]["full_name"] == "Test User"
 
 
-def test_update_profile(test_client: TestClient) -> None:
-    """Test updating an existing profile."""
-    # First create a profile
+def _create_profile(test_client: TestClient) -> tuple[dict, dict]:
+    """Create a profile and return the full initial payload dicts."""
     profile_data = {
         "full_name": "Test User",
         "contact": None,
@@ -159,10 +158,16 @@ def test_update_profile(test_client: TestClient) -> None:
         json={"profile_data": profile_data, "preferences_data": preferences_data},
     )
     assert response.status_code == 200
-    original_profile_id = response.json()["id"]
-    original_version = response.json()["version"]
+    return profile_data, preferences_data
 
-    # Update the profile
+
+def test_update_profile(test_client: TestClient) -> None:
+    """Test updating an existing profile (full replacement)."""
+    profile_data, preferences_data = _create_profile(test_client)
+
+    original_version = test_client.get("/api/v1/profiles/current").json()["version"]
+
+    # Update the profile — both sub-objects supplied.
     updated_profile_data = profile_data.copy()
     updated_profile_data["full_name"] = "Updated User"
     updated_preferences_data = preferences_data.copy()
@@ -180,6 +185,82 @@ def test_update_profile(test_client: TestClient) -> None:
     assert updated_data["version"] == original_version + 1
     assert updated_data["profile_data"]["full_name"] == "Updated User"
     assert updated_data["preferences_data"]["target_titles"] == ["Lead Engineer"]
+
+
+def test_update_profile_partial_preserves_other_field(
+    test_client: TestClient,
+) -> None:
+    """Updating only profile_data leaves preferences_data unchanged."""
+    profile_data, preferences_data = _create_profile(test_client)
+
+    # Update only the name, leaving preferences untouched.
+    response = test_client.put(
+        "/api/v1/profiles/current",
+        json={"profile_data": {"full_name": "Partial User"}},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["profile_data"]["full_name"] == "Partial User"
+    # Existing skill preserved (merge, not replace).
+    assert data["profile_data"]["skills"][0]["name"] == "Python"
+    # Preferences untouched.
+    assert data["preferences_data"]["target_titles"] == ["Senior Python Engineer"]
+
+
+def test_update_profile_partial_preferences_only(
+    test_client: TestClient,
+) -> None:
+    """Updating only preferences_data leaves profile_data unchanged."""
+    profile_data, preferences_data = _create_profile(test_client)
+
+    response = test_client.put(
+        "/api/v1/profiles/current",
+        json={"preferences_data": {"target_titles": ["Data Engineer"]}},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["preferences_data"]["target_titles"] == ["Data Engineer"]
+    # Profile untouched.
+    assert data["profile_data"]["full_name"] == "Test User"
+    assert data["profile_data"]["skills"][0]["name"] == "Python"
+
+
+def test_update_profile_partial_field_merge(test_client: TestClient) -> None:
+    """A partial profile_data merges into the stored object, not replaces it."""
+    profile_data, _ = _create_profile(test_client)
+
+    response = test_client.put(
+        "/api/v1/profiles/current",
+        json={"profile_data": {"summary": "Experienced backend engineer."}},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["profile_data"]["summary"] == "Experienced backend engineer."
+    assert data["profile_data"]["full_name"] == "Test User"
+    assert data["profile_data"]["skills"][0]["name"] == "Python"
+
+
+def test_update_profile_explicit_null_preserves(test_client: TestClient) -> None:
+    """An explicitly-null sub-object preserves the stored value."""
+    profile_data, preferences_data = _create_profile(test_client)
+
+    response = test_client.put(
+        "/api/v1/profiles/current",
+        json={"profile_data": None, "preferences_data": None},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["profile_data"]["full_name"] == "Test User"
+    assert data["preferences_data"]["target_titles"] == ["Senior Python Engineer"]
+
+
+def test_create_profile_requires_both_subobjects(test_client: TestClient) -> None:
+    """Creating a new profile with only one sub-object is rejected."""
+    response = test_client.put(
+        "/api/v1/profiles/current",
+        json={"profile_data": {"full_name": "Solo"}},
+    )
+    assert response.status_code == 400
 
 
 def test_ingest_job_posting(test_client: TestClient) -> None:
