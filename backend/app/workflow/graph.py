@@ -200,6 +200,9 @@ async def persist_node(state: WorkflowState) -> dict[str, Any]:
             # Generate content hashes for idempotency
             resume = state.get("draft_resume", "")
             cover_letter = state.get("draft_cover_letter", "")
+            job_title = state["job_posting"].title or ""
+            company = state["job_posting"].company or ""
+            job_hash = hashlib.sha256(f"{job_title}:{company}".encode()).hexdigest()[:16]
 
             # Create application
             application = ApplicationModel(
@@ -211,26 +214,33 @@ async def persist_node(state: WorkflowState) -> dict[str, Any]:
             await session.flush()
             await session.refresh(application)
 
-            # Save documents
+            # Save documents with version tracking
+            doc_versions = {}
             if resume:
+                resume_hash = hashlib.sha256(resume.encode()).hexdigest()[:16]
                 doc_resume = DocumentModel(
                     application_id=application.id,
                     document_type="resume",
                     content=resume,
                     version=1,
+                    source_job_content_hash=job_hash,
                     review_status="pending_review",
                 )
                 session.add(doc_resume)
+                doc_versions["resume"] = 1
 
             if cover_letter:
+                cover_letter_hash = hashlib.sha256(cover_letter.encode()).hexdigest()[:16]
                 doc_letter = DocumentModel(
                     application_id=application.id,
                     document_type="cover_letter",
                     content=cover_letter,
                     version=1,
+                    source_job_content_hash=job_hash,
                     review_status="pending_review",
                 )
                 session.add(doc_letter)
+                doc_versions["cover_letter"] = 1
 
             await session.commit()
 
@@ -239,6 +249,8 @@ async def persist_node(state: WorkflowState) -> dict[str, Any]:
                     **state.get("metadata", {}),
                     "persisted": True,
                     "application_id": application.id,
+                    "job_content_hash": job_hash,
+                    "document_versions": doc_versions,
                 },
             }
     except Exception as e:
@@ -253,33 +265,51 @@ async def await_approval_node(state: WorkflowState) -> dict[str, Any]:
 
     This node marks the workflow as waiting for human approval.
     The application cannot be submitted until approved.
+
+    Approval is bound to:
+    - The specific document version (v1)
+    - The job content hash (for invalidation if job changes)
     """
-    async with AsyncSessionLocal() as session:
-        application_id = state.get("metadata", {}).get("application_id")
-        if application_id:
-            approval = ApprovalRequestModel(
-                application_id=application_id,
-                action="submit_application",
-                status="pending",
-            )
-            session.add(approval)
-            await session.flush()
-            await session.refresh(approval)
+    try:
+        async with AsyncSessionLocal() as session:
+            application_id = state.get("metadata", {}).get("application_id")
+            job_content_hash = state.get("metadata", {}).get("job_content_hash")
+
+            if application_id:
+                # Bind approval to document version and job content hash
+                approval = ApprovalRequestModel(
+                    application_id=application_id,
+                    action="submit_application",
+                    status="pending",
+                    document_version="1",
+                    job_content_hash=job_content_hash,
+                )
+                session.add(approval)
+                await session.flush()
+                await session.refresh(approval)
+
+                return {
+                    "approval_request_id": str(approval.id),
+                    "approval_status": "pending",
+                    "status": "awaiting_approval",
+                    "metadata": {
+                        **state.get("metadata", {}),
+                        "approval_requested": True,
+                        "approval_id": str(approval.id),
+                        "document_version_bound": "1",
+                        "job_content_hash_bound": job_content_hash,
+                    },
+                }
 
             return {
-                "approval_request_id": str(approval.id),
-                "approval_status": "pending",
                 "status": "awaiting_approval",
-                "metadata": {
-                    **state.get("metadata", {}),
-                    "approval_requested": True,
-                    "approval_id": str(approval.id),
-                },
+                "metadata": {**state.get("metadata", {}), "approval_requested": True},
             }
-
+    except Exception as e:
+        logger.error("Approval creation failed: %s", e)
         return {
             "status": "awaiting_approval",
-            "metadata": {**state.get("metadata", {}), "approval_requested": True},
+            "metadata": {**state.get("metadata", {}), "approval_requested": False},
         }
 
 
