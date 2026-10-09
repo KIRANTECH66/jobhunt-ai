@@ -47,9 +47,11 @@ async def get_checkpoint_saver(db_path: str | None = None) -> Any:
 
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
+    import aiosqlite
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-    saver = AsyncSqliteSaver.from_conn_string(db_path)
+    conn = await aiosqlite.connect(db_path)
+    saver = AsyncSqliteSaver(conn)
     await saver.setup()
     return saver
 
@@ -67,5 +69,6 @@ async def compile_with_checkpoint(
     Returns:
         A compiled workflow with checkpoint persistence.
     """
+    # Create checkpointer using the helper function
     saver = await get_checkpoint_saver(db_path)
     return graph.compile(checkpointer=saver)
