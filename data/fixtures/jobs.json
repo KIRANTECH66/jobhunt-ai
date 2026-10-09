@@ -1,0 +1,35 @@
+[
+  {
+    "company": "TechCorp Inc",
+    "title": "Senior Python Engineer",
+    "location": "San Francisco, CA",
+    "work_arrangement": "hybrid",
+    "employment_type": "full_time",
+    "description": "We are seeking a Senior Python Engineer with 5+ years of experience in Django, REST APIs, and PostgreSQL. The ideal candidate will have experience leading technical projects and mentoring junior developers.",
+    "url": "https://techcorp.com/jobs/senior-python-engineer",
+    "posted_at": "2026-10-01T00:00:00Z",
+    "external_id": "TC-SENIOR-PYTHON-001"
+  },
+  {
+    "company": "DataSystems Ltd",
+    "title": "Data Analyst",
+    "location": "New York, NY",
+    "work_arrangement": "remote",
+    "employment_type": "full_time",
+    "description": "Join our analytics team to work with large datasets using Python, SQL, and Tableau. Responsibilities include creating dashboards, performing statistical analysis, and communicating insights to stakeholders.",
+    "url": "https://datasystems.com/careers/data-analyst",
+    "posted_at": "2026-10-02T00:00:00Z",
+    "external_id": "DS-DATA-ANALYST-002"
+  },
+  {
+    "company": "StartupXYZ",
+    "title": "Frontend Developer",
+    "location": "Austin, TX",
+    "work_arrangement": "onsite",
+    "employment_type": "full_time",
+    "description": "Looking for a Frontend Developer skilled in React, TypeScript, and CSS to build responsive user interfaces. Experience with state management and performance optimization preferred.",
+    "url": "https://startupxyz.com/jobs/frontend-developer",
+    "posted_at": "2026-10-03T00:00:00Z",
+    "external_id": "SXYZ-FRONTEND-003"
+  }
+]
