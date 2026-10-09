@@ -91,8 +91,7 @@ def test_checkpoint_dsn_does_not_use_undefined_variable(monkeypatch: pytest.Monk
 def test_default_database_url_is_absolute() -> None:
     """The default SQLite URL resolves to an absolute path, not CWD-relative."""
     assert settings.database_url.startswith("sqlite+aiosqlite:///")
-    db_path = settings.database_url.split("sqlite", 1)[1].lstrip("+aiosqlite:").lstrip("/")
-    db_path = db_path.split("?", 1)[0]
+    db_path = _sqlite_db_path(settings.database_url)
     assert Path(db_path).is_absolute(), (
         f"Default SQLite path must be absolute; got {db_path!r}"
     )
@@ -103,12 +102,7 @@ def test_default_database_url_is_absolute() -> None:
 
 def test_default_database_url_under_repo_data() -> None:
     """The default path is <repo>/data/jobhunt.db."""
-    db_path = (
-        settings.database_url.split("sqlite", 1)[1]
-        .lstrip("+aiosqlite:")
-        .lstrip("/")
-        .split("?", 1)[0]
-    )
+    db_path = _sqlite_db_path(settings.database_url)
     assert Path(db_path).name == "jobhunt.db"
     assert Path(db_path).parent.name == "data"
 
@@ -116,7 +110,7 @@ def test_default_database_url_under_repo_data() -> None:
 def test_ensure_sqlite_dir_creates_missing_parents(tmp_path: Path) -> None:
     """_ensure_sqlite_dir creates the parent directory for an absolute path."""
     db_path = tmp_path / "nested" / "deep" / "test.db"
-    database_module._ensure_sqlite_dir(f"sqlite+aiosqlite:///{db_path}")
+    database_module._ensure_sqlite_dir(f"sqlite+aiosqlite:///{db_path.as_posix()}")
     assert db_path.parent.is_dir()
 
 
@@ -137,10 +131,5 @@ def test_config_reimport_uses_resolved_default() -> None:
     reloaded = importlib.import_module("app.config")
     assert reloaded.settings.database_url == settings.database_url
     assert reloaded.settings.database_url.startswith("sqlite+aiosqlite:///")
-    db_path = (
-        reloaded.settings.database_url.split("sqlite", 1)[1]
-        .lstrip("+aiosqlite:")
-        .lstrip("/")
-        .split("?", 1)[0]
-    )
+    db_path = _sqlite_db_path(reloaded.settings.database_url)
     assert Path(db_path).is_absolute()

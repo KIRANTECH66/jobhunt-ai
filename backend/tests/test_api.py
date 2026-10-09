@@ -254,13 +254,41 @@ def test_update_profile_explicit_null_preserves(test_client: TestClient) -> None
     assert data["preferences_data"]["target_titles"] == ["Senior Python Engineer"]
 
 
-def test_create_profile_requires_both_subobjects(test_client: TestClient) -> None:
-    """Creating a new profile with only one sub-object is rejected."""
-    response = test_client.put(
-        "/api/v1/profiles/current",
-        json={"profile_data": {"full_name": "Solo"}},
+@pytest.mark.asyncio
+async def test_create_profile_requires_both_subobjects(test_client: TestClient) -> None:
+    """Creating a new profile with only one sub-object is rejected.
+
+    Runs against an isolated empty database because the shared session-scoped
+    ``db_session`` may already contain a profile from earlier tests.
+    """
+    from sqlalchemy.ext.asyncio import (
+        AsyncSession,
+        async_sessionmaker,
+        create_async_engine,
     )
-    assert response.status_code == 400
+    from app.api import deps
+    from app.main import app
+    from app.models._base import Base
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async def override_get_db() -> AsyncIterator[AsyncSession]:
+        async with SessionLocal() as session:
+            yield session
+
+    app.dependency_overrides[deps.get_db] = override_get_db
+    try:
+        response = test_client.put(
+            "/api/v1/profiles/current",
+            json={"profile_data": {"full_name": "Solo"}},
+        )
+        assert response.status_code == 400
+        assert "both" in response.json()["detail"].lower()
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_ingest_job_posting(test_client: TestClient) -> None:
