@@ -6,6 +6,7 @@ Uses an isolated in-memory SQLite database by mocking the database dependency.
 from __future__ import annotations
 
 import pytest
+import pytest_asyncio
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from unittest.mock import patch, AsyncMock
@@ -18,7 +19,7 @@ _engine = create_async_engine("sqlite+aiosqlite:///:memory:")
 AsyncSessionLocal = async_sessionmaker(_engine, expire_on_commit=False, class_=AsyncSession)
 
 
-@pytest.fixture(scope="session")
+@pytest_asyncio.fixture(scope="session")
 async def db_session():
     """Create a session for API tests (session-scoped)."""
     async with _engine.begin() as conn:

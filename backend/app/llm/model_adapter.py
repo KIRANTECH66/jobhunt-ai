@@ -100,7 +100,8 @@ class MockModelAdapter(ModelAdapter):
     The mock supports the full tool-calling contract: it accepts a
     ``messages`` conversation and optional ``tools`` list, and may return
     ``tool_calls`` in the normalized ``{"id", "name", "arguments"}`` shape.
-    Tests can script multi-turn cycles via :meth:`set_response`.
+    Tests can script multi-turn cycles via :meth:`set_response` or
+    :meth:`set_sequence`.
     """
 
     # Canned responses keyed by prompt pattern
@@ -127,14 +128,29 @@ class MockModelAdapter(ModelAdapter):
         # Per-instance scripted responses for tool-calling cycles. Keys are
         # matched against any message content in the conversation.
         self._scripted: dict[str, ModelResponse] = {}
+        # Optional scripted sequence: responses are consumed in order.
+        self._sequence: list[ModelResponse] = []
+        self._sequence_index = 0
 
     def set_response(self, key: str, response: ModelResponse) -> None:
         """Script a canned response keyed by substring match in any message content."""
         self._scripted[key] = response
 
+    def set_sequence(self, responses: list[ModelResponse]) -> None:
+        """Script a sequence of responses consumed in order.
+
+        Each call to :meth:`generate` returns the next response in the
+        sequence. This is the primary mechanism for multi-turn tool-calling
+        tests where the model must return a tool call, then a final answer.
+        """
+        self._sequence = list(responses)
+        self._sequence_index = 0
+
     def clear_scripted(self) -> None:
-        """Clear all scripted responses."""
+        """Clear all scripted responses and sequences."""
         self._scripted.clear()
+        self._sequence = []
+        self._sequence_index = 0
 
     @staticmethod
     def _message_contains_key(messages: list[dict[str, Any]] | None, key: str) -> bool:
@@ -161,32 +177,61 @@ class MockModelAdapter(ModelAdapter):
         tools: list[dict[str, Any]] | None = None,
         **kwargs: Any,
     ) -> ModelResponse:
-        # 1. Check scripted responses: if any key appears in the conversation (or prompt if no messages),
-        #    return the corresponding response.
+        # 1. Scripted sequence takes precedence.
+        if self._sequence:
+            response = self._sequence[self._sequence_index]
+            self._sequence_index += 1
+            if self._sequence_index >= len(self._sequence):
+                self._sequence = []
+                self._sequence_index = 0
+            return response
+
+        # 2. When the conversation already contains a tool-result message,
+        #    look for a scripted response keyed by the *last* tool result's
+        #    content. This lets tests script the final answer after a tool
+        #    call by passing a key that appears in the tool result (e.g. a
+        #    JSON fragment or a unique ID).
         if messages:
-            for scripted_key, scripted_response in self._scripted.items():
-                if self._message_contains_key(messages, scripted_key):
-                    return scripted_response
+            last_tool_content: str | None = None
+            for message in reversed(messages):
+                if message.get("role") == "tool":
+                    content = message.get("content")
+                    if isinstance(content, str):
+                        last_tool_content = content
+                    elif content is not None:
+                        last_tool_content = str(content)
+                    break
+
+            if last_tool_content is not None:
+                for scripted_key, scripted_response in self._scripted.items():
+                    if scripted_key in last_tool_content:
+                        return scripted_response
+                # No match in tool result — fall through to generic fallback
+                # (do NOT match against system prompt to avoid re-triggering
+                # the same tool call).
+            else:
+                # No tool result yet: first call or a plain response.
+                # Match against any message content (e.g. tool name in system prompt).
+                for scripted_key, scripted_response in self._scripted.items():
+                    if self._message_contains_key(messages, scripted_key):
+                        return scripted_response
         else:
-            # No messages provided: fall back to checking the prompt (and system?) for backward compatibility.
+            # No messages provided: fall back to checking the prompt for
+            # backward compatibility with existing tests.
             lowered_prompt = prompt.lower()
             for scripted_key, scripted_response in self._scripted.items():
                 if scripted_key.lower() in lowered_prompt:
                     return scripted_response
 
-        # 2. Check the built-in canned responses (backward compatibility).
-        if messages:
-            # When messages are provided, we do not use the prompt-based canned responses.
-            # This keeps the mock deterministic for tool-calling tests.
-            pass
-        else:
+        # 3. Check the built-in canned responses (backward compatibility).
+        if not messages:
             lowered = prompt.lower()
             if "match_score" in lowered:
                 return self._responses["match_score"]
             elif "no match" in lowered or "unqualified" in lowered:
                 return self._responses["no_match"]
 
-        # 3. Generic fallback.
+        # 4. Generic fallback.
         return ModelResponse(
             content='{"result": "ok"}',
             model="mock",

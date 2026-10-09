@@ -24,7 +24,6 @@ from app.harness.harness import HarnessError, HarnessResult
 from app.schemas.job import JobPosting
 from app.schemas.match import MatchResult
 from app.schemas.profile import CandidateProfile
-from app.workflow.graph import compile_job_search_workflow
 from app.workflow.state import create_initial_state
 
 logger = logging.getLogger(__name__)
@@ -54,6 +53,8 @@ class Supervisor:
     def workflow(self):
         """Lazily build the compiled workflow so tests can inject one."""
         if self._workflow is None:
+            # Import deferred to avoid circular imports with app.workflow.graph.
+            from app.workflow.graph import compile_job_search_workflow
             self._workflow = compile_job_search_workflow()
         return self._workflow
 

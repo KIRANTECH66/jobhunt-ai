@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import pytest
+import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -32,7 +33,7 @@ def event_loop() -> asyncio.AbstractEventLoop:
     loop.close()
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def db_session() -> AsyncSession:
     """Create a new database session for each test."""
     async with engine.begin() as conn:
