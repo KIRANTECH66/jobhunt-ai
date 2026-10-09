@@ -153,6 +153,31 @@ class MockModelAdapter(ModelAdapter):
                         return str(content)
         return prompt
 
+    @staticmethod
+    def _last_tool_call_name(messages: list[dict[str, Any]] | None) -> str | None:
+        """Return the name of the last tool call in the conversation, if any."""
+        if not messages:
+            return None
+        for message in reversed(messages):
+            if message.get("role") == "assistant":
+                tool_calls = message.get("tool_calls")
+                if tool_calls and isinstance(tool_calls, list) and len(tool_calls) > 0:
+                    # Return the first tool call's function name
+                    first_call = tool_calls[0]
+                    if isinstance(first_call, dict):
+                        func = first_call.get("function")
+                        if func:
+                            return func.get("name")
+        return None
+
+    def _scripted_lookup(self, key: str, tool_call_name: str | None) -> ModelResponse | None:
+        """Return a scripted response if one matches the key or tool call name."""
+        if key in self._scripted:
+            return self._scripted[key]
+        if tool_call_name and tool_call_name in self._scripted:
+            return self._scripted[tool_call_name]
+        return None
+
     async def generate(
         self,
         prompt: str,
@@ -163,10 +188,12 @@ class MockModelAdapter(ModelAdapter):
         **kwargs: Any,
     ) -> ModelResponse:
         key = self._last_user_message(messages, prompt)
+        tool_call_name = self._last_tool_call_name(messages)
 
         # Scripted responses take precedence (used by tool-calling cycle tests).
-        if key in self._scripted:
-            return self._scripted[key]
+        scripted = self._scripted_lookup(key, tool_call_name)
+        if scripted is not None:
+            return scripted
 
         # Simple pattern matching for testability
         lowered = key.lower()
