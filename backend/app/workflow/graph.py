@@ -69,7 +69,12 @@ async def validate_node(state: WorkflowState) -> dict[str, Any]:
 
 
 async def draft_node(state: WorkflowState) -> dict[str, Any]:
-    """Generate application drafts using the Application Writer agent."""
+    """Generate application drafts using the Application Writer agent.
+
+    The writer runs against the CURRENT ``draft_resume``/``draft_cover_letter``
+    (if present from a prior revision) so revisions actually rewrite the
+    documents rather than re-drafting from scratch.
+    """
     writer = ApplicationWriterAgent()
 
     try:
@@ -80,8 +85,8 @@ async def draft_node(state: WorkflowState) -> dict[str, Any]:
         )
 
         return {
-            "draft_resume": result.get("resume", ""),
-            "draft_cover_letter": result.get("cover_letter", ""),
+            "draft_resume": result.get("resume", state.get("draft_resume", "")),
+            "draft_cover_letter": result.get("cover_letter", state.get("draft_cover_letter", "")),
             "metadata": {
                 **state.get("metadata", {}),
                 "drafted": True,
@@ -183,7 +188,7 @@ async def revise_or_block_node(state: WorkflowState) -> dict[str, Any]:
             },
         }
 
-    # Auto-revise
+    # Auto-revise — route back to draft for another generation attempt
     return {
         "revision_count": revision_count + 1,
         "status": "revising",
@@ -407,12 +412,15 @@ def build_job_search_graph() -> StateGraph:
         "revise_or_block",
         route_after_revise_or_block,
         {
+            "draft": "draft",
             "persist": "persist",
             END: END,
         },
     )
 
     graph.add_edge("persist", "await_approval")
+
+    return graph
 
     return graph
 

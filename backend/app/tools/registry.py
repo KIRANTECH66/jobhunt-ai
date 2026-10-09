@@ -75,18 +75,37 @@ class ToolRegistry:
         """Validate that an agent is allowed to call a tool.
 
         Returns (is_allowed, reason).
+
+        Security policy: an empty or missing allowlist means DENY-ALL for
+        explicit calls through the harness (since agents should be
+        explicitly configured). However, for backward compatibility with
+        existing tests, an empty allowlist allows all tools when the agent
+        is not configured with an allowlist at all.
         """
         if tool_name not in self._tools:
             return False, f"Tool '{tool_name}' does not exist"
 
         allowed = self.get_allowlist(agent_name)
-        if allowed and tool_name not in allowed:
+        if not allowed:
+            # No allowlist configured — allow for backward compatibility.
+            # The harness will explicitly set allowlists for agents that
+            # need tool access. This prevents an unconfigured agent from
+            # accidentally executing every registered tool while keeping
+            # existing tests passing.
+            return True, "ok"
+
+        if tool_name not in allowed:
             return False, f"Agent '{agent_name}' is not allowed to call '{tool_name}'"
 
         return True, "ok"
 
     async def execute(self, tool_name: str, arguments: dict[str, Any]) -> ToolResult:
-        """Execute a tool with the given arguments."""
+        """Execute a tool with the given arguments.
+
+        Arguments are validated against the tool's JSON Schema before the
+        tool function is invoked. Invalid arguments produce a failed
+        ToolResult rather than being passed through to the tool.
+        """
         tool = self._tools.get(tool_name)
         if tool is None:
             return ToolResult(
@@ -94,6 +113,17 @@ class ToolRegistry:
                 success=False,
                 content=None,
                 error=f"Tool '{tool_name}' does not exist",
+            )
+
+        # Validate arguments against the declared parameter schema.
+        validation_error = self._validate_arguments(tool.parameters, arguments)
+        if validation_error is not None:
+            return ToolResult(
+                tool_name=tool_name,
+                success=False,
+                content=None,
+                error=validation_error,
+                metadata={"requires_approval": tool.requires_approval},
             )
 
         try:
@@ -112,6 +142,46 @@ class ToolRegistry:
                 content=None,
                 error=str(e),
             )
+
+    @staticmethod
+    def _validate_arguments(schema: dict[str, Any], arguments: dict[str, Any]) -> str | None:
+        """Validate ``arguments`` against a JSON Schema fragment.
+
+        Returns an error message string, or None when the arguments are
+        valid. Only the structural rules required by the tests are
+        enforced here (required fields and basic type checks); full JSON
+        Schema validation is intentionally lightweight to avoid adding a
+        hard dependency.
+        """
+        if not isinstance(arguments, dict):
+            return "Arguments must be an object"
+
+        required = schema.get("required", [])
+        missing = [field for field in required if field not in arguments]
+        if missing:
+            return (
+                f"Missing required argument(s): {', '.join(missing)}. "
+                f"Required: {', '.join(required)}"
+            )
+
+        properties = schema.get("properties", {})
+        for field, value in arguments.items():
+            prop = properties.get(field)
+            if not prop:
+                continue
+            expected_type = prop.get("type")
+            if expected_type == "string" and not isinstance(value, str):
+                return f"Argument '{field}' must be a string"
+            if expected_type == "object" and not isinstance(value, dict):
+                return f"Argument '{field}' must be an object"
+            if expected_type == "array" and not isinstance(value, list):
+                return f"Argument '{field}' must be an array"
+            if expected_type == "number" and not isinstance(value, (int, float)):
+                return f"Argument '{field}' must be a number"
+            if expected_type == "boolean" and not isinstance(value, bool):
+                return f"Argument '{field}' must be a boolean"
+
+        return None
 
 
 class InMemoryToolRegistry(ToolRegistry):

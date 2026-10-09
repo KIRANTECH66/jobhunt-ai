@@ -216,3 +216,60 @@ async def get_job_match(
             detail=f"No match found for job {job_id}. Run the matcher first.",
         )
     return match
+
+
+# --------------------------------------------------------------------------- #
+# Workflow endpoints (FR-05, FR-06, FR-07, FR-08)
+# --------------------------------------------------------------------------- #
+
+
+@api_router.post("/workflows", tags=["workflows"])
+async def run_workflow(
+    job_id: str,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Trigger the full application workflow for a job.
+
+    Loads the candidate profile and job posting, runs the matcher agent, then
+    drives the LangGraph workflow through draft -> review -> persist ->
+    await_approval. Returns the terminal workflow state.
+
+    This endpoint never performs external submission: approval is required
+    before any side effect can occur (FR-08).
+    """
+    from app.agents.supervisor import Supervisor, SupervisorError
+    from app.repositories.profile import SQLAlchemyProfileRepository
+    from app.repositories.job import SQLAlchemyJobRepository
+
+    profile_repo = SQLAlchemyProfileRepository(session)
+    job_repo = SQLAlchemyJobRepository(session)
+
+    profile = await profile_repo.get_current()
+    if profile is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No profile found. Create one first.",
+        )
+
+    job = await job_repo.get_by_id(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job not found: {job_id}",
+        )
+
+    supervisor = Supervisor()
+    try:
+        result = await supervisor.run(profile=profile, job=job)
+    except SupervisorError as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Workflow failed at phase '{e.phase}': {e}",
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Workflow failed: {e}",
+        )
+
+    return result

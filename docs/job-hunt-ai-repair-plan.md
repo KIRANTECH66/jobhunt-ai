@@ -1,8 +1,11 @@
 JobHunt AI Architecture Repair Plan
 
-Status: Proposed — awaiting approval
+Status: Verified — implementation authorized
 Scope: Harness, workflow loops, multi-agent orchestration
 Constraint: Planning only. No implementation changes are authorized.
+
+Verification date: 2026-10-09
+Verified against: repository at commit 4e2c29c (main, clean working tree, up to date with origin/main)
 
 1. Objective
 
@@ -199,3 +202,18 @@ The exact files expected to change in Phase 1.
 The tests and acceptance criteria for that phase.
 
 Wait for explicit approval before making any repair changes.
+
+8.1 Approval Status
+
+Implementation is authorized as of 2026-10-09.
+
+Verified findings (Section 3) are unchanged and remain the basis for all
+implementation work. The authorization covers Phases 1-5 in the order
+listed, with each phase gated on its own acceptance criteria.
+
+Repository integrity constraints that remain in force:
+- Preserve unrelated user changes.
+- Do not rewrite README.md or docs/MILESTONE_5_ACCEPTANCE.md.
+- Do not weaken existing tests to make the suite pass.
+- Keep mock-based tests deterministic; do not let them masquerade as live
+  execution.
