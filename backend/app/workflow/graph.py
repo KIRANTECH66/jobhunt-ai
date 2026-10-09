@@ -5,7 +5,7 @@ Implements the complete job search workflow:
 2. draft - generate application materials via Application Writer agent
 3. review - run quality checks via Quality Reviewer agent
 4. revise_or_block - decide whether to auto-revise or require human intervention
-5. persist - save documents to database with versioning
+5. persist - save documents to database with versioning and idempotency
 6. await_approval - create approval request and pause for human review
 
 Uses LangGraph checkpoints for persistence and resumption.
@@ -24,9 +24,15 @@ from app.agents.quality_reviewer import QualityReviewerAgent
 from app.models.application import Application as ApplicationModel
 from app.models.application import Document as DocumentModel
 from app.models.application import ApprovalRequest as ApprovalRequestModel
+from app.repositories.application import SQLAlchemyApplicationRepository
 from app.schemas.application import ApplicationStatus
 from app.database import AsyncSessionLocal
 from app.workflow.state import WorkflowState, create_initial_state
+from app.workflow.validation import (
+    validate_approval_against_state,
+    compute_job_content_hash,
+    ApprovalValidationError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -194,53 +200,51 @@ async def persist_node(state: WorkflowState) -> dict[str, Any]:
 
     Creates or updates an Application record and stores document versions.
     Uses idempotent writes to prevent duplicate side effects.
+    - Checks for existing application (job_id + profile_id)
+    - Increments document version on revision
+    - Computes job content hash for approval binding
     """
     try:
         async with AsyncSessionLocal() as session:
+            repo = SQLAlchemyApplicationRepository(session)
+
             # Generate content hashes for idempotency
             resume = state.get("draft_resume", "")
             cover_letter = state.get("draft_cover_letter", "")
-            job_title = state["job_posting"].title or ""
-            company = state["job_posting"].company or ""
-            job_hash = hashlib.sha256(f"{job_title}:{company}".encode()).hexdigest()[:16]
+            job_posting = state["job_posting"]
+            job_hash = compute_job_content_hash(job_posting)
 
-            # Create application
-            application = ApplicationModel(
+            # Create or get existing application (idempotent)
+            application = await repo.create_or_get(
                 profile_id=state["profile"].profile_id,
                 job_id=state["job_id"],
                 status=ApplicationStatus.drafting,
             )
-            session.add(application)
-            await session.flush()
-            await session.refresh(application)
 
             # Save documents with version tracking
-            doc_versions = {}
+            doc_versions: dict[str, int] = {}
+
             if resume:
-                resume_hash = hashlib.sha256(resume.encode()).hexdigest()[:16]
                 doc_resume = DocumentModel(
                     application_id=application.id,
                     document_type="resume",
                     content=resume,
-                    version=1,
                     source_job_content_hash=job_hash,
                     review_status="pending_review",
                 )
-                session.add(doc_resume)
-                doc_versions["resume"] = 1
+                doc_resume = await repo.save_document(doc_resume)
+                doc_versions["resume"] = doc_resume.version
 
             if cover_letter:
-                cover_letter_hash = hashlib.sha256(cover_letter.encode()).hexdigest()[:16]
                 doc_letter = DocumentModel(
                     application_id=application.id,
                     document_type="cover_letter",
                     content=cover_letter,
-                    version=1,
                     source_job_content_hash=job_hash,
                     review_status="pending_review",
                 )
-                session.add(doc_letter)
-                doc_versions["cover_letter"] = 1
+                doc_letter = await repo.save_document(doc_letter)
+                doc_versions["cover_letter"] = doc_letter.version
 
             await session.commit()
 
@@ -267,26 +271,32 @@ async def await_approval_node(state: WorkflowState) -> dict[str, Any]:
     The application cannot be submitted until approved.
 
     Approval is bound to:
-    - The specific document version (v1)
+    - The specific document version (current version)
     - The job content hash (for invalidation if job changes)
     """
     try:
         async with AsyncSessionLocal() as session:
+            repo = SQLAlchemyApplicationRepository(session)
             application_id = state.get("metadata", {}).get("application_id")
             job_content_hash = state.get("metadata", {}).get("job_content_hash")
 
             if application_id:
-                # Bind approval to document version and job content hash
-                approval = ApprovalRequestModel(
+                # Get current document versions
+                latest_resume = await repo.get_latest_document(application_id, "resume")
+                latest_letter = await repo.get_latest_document(application_id, "cover_letter")
+
+                # Bind approval to highest current version
+                max_version = max(
+                    (latest_resume.version if latest_resume else 0),
+                    (latest_letter.version if latest_letter else 0),
+                )
+
+                approval = await repo.create_approval_request(
                     application_id=application_id,
-                    action="submit_application",
-                    status="pending",
-                    document_version="1",
+                    requested_by="system",
+                    document_version=str(max_version),
                     job_content_hash=job_content_hash,
                 )
-                session.add(approval)
-                await session.flush()
-                await session.refresh(approval)
 
                 return {
                     "approval_request_id": str(approval.id),
@@ -296,7 +306,7 @@ async def await_approval_node(state: WorkflowState) -> dict[str, Any]:
                         **state.get("metadata", {}),
                         "approval_requested": True,
                         "approval_id": str(approval.id),
-                        "document_version_bound": "1",
+                        "document_version_bound": str(max_version),
                         "job_content_hash_bound": job_content_hash,
                     },
                 }
@@ -311,6 +321,48 @@ async def await_approval_node(state: WorkflowState) -> dict[str, Any]:
             "status": "awaiting_approval",
             "metadata": {**state.get("metadata", {}), "approval_requested": False},
         }
+
+
+async def validate_approval_node(state: WorkflowState) -> dict[str, Any]:
+    """Validate pending approval against current document and job state.
+
+    Called when checking if an approval is still valid.
+    Returns validation result or raises on invalid approval.
+    """
+    approval_id = state.get("metadata", {}).get("approval_id")
+    if not approval_id:
+        return {
+            "metadata": {**state.get("metadata", {}), "approval_valid": None}
+        }
+
+    async with AsyncSessionLocal() as session:
+        repo = SQLAlchemyApplicationRepository(session)
+        approval = await repo.get_pending_approval(state.get("metadata", {}).get("application_id"))
+
+        if not approval:
+            return {
+                "metadata": {**state.get("metadata", {}), "approval_valid": False, "approval_reason": "no_pending_approval"}
+            }
+
+        try:
+            # Build minimal state for validation
+            approval_data = {
+                "status": approval.status,
+                "invalidated": approval.invalidated,
+                "document_version": approval.document_version,
+                "job_content_hash": approval.job_content_hash,
+            }
+            doc = {"version": state.get("metadata", {}).get("document_version_bound", 1)}
+            job = state.get("job_posting", {})
+            validate_approval_against_state(approval_data, doc, job)
+
+            return {
+                "metadata": {**state.get("metadata", {}), "approval_valid": True}
+            }
+        except ApprovalValidationError as e:
+            return {
+                "metadata": {**state.get("metadata", {}), "approval_valid": False, "approval_reason": e.reason}
+            }
 
 
 # --------------------------------------------------------------------------- #
